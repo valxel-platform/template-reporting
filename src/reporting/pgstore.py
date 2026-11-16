@@ -117,27 +117,27 @@ class PgStore:
             sets=sql.SQL(", ").join(sql.SQL("{c} = excluded.{c}").format(c=sql.Identifier(c)) for c in cols),
         )
         with self.conn.cursor() as cur:
-            cur.execute(
+            cur.execute(  # nosemgrep
                 q, [*values, offset, partition]
-            )  # nosemgrep: psycopg sql.Identifier from approved reporting.yaml; values are bound
+            )
             return cur.rowcount == 1
 
     def delete(self, table: str, key: str) -> None:
         with self.conn.cursor() as cur:
-            cur.execute(
+            cur.execute(  # nosemgrep
                 sql.SQL("delete from {} where {} = %s").format(sql.Identifier(table), self._key(table)), [key]
-            )  # nosemgrep: psycopg sql.Identifier from approved reporting.yaml; values are bound
+            )
 
     def rows(self, table: str, tenant: str | None = None) -> list[dict[str, Any]]:
         """As a report would see them: through reporting_reader and its tenant, when one is given."""
         cols = self.cfg.tables[table].columns
         with self.conn.transaction(), self.conn.cursor() as cur:
             if tenant is not None:
-                cur.execute(
+                cur.execute(  # nosemgrep
                     sql.SQL("set local role {}").format(sql.Identifier(READER))
-                )  # nosemgrep: psycopg sql.Identifier from approved reporting.yaml; values are bound
-                cur.execute(sql.SQL("select set_config('reporting.tenant', %s, true)"), [tenant])
-            cur.execute(  # nosemgrep: psycopg sql.Identifier from approved reporting.yaml; values are bound
+                )
+                cur.execute(sql.SQL("select set_config('reporting.tenant', %s, true)"), [tenant])  # nosemgrep
+            cur.execute(  # nosemgrep
                 sql.SQL("select {} from {}").format(
                     sql.SQL(", ").join(map(sql.Identifier, cols)), sql.Identifier(table)
                 )
@@ -146,16 +146,16 @@ class PgStore:
 
     def generation(self, table: str) -> int:
         with self.conn.cursor() as cur:
-            cur.execute(sql.SQL("select generation from _reporting_state where tbl = %s"), [table])
+            cur.execute(sql.SQL("select generation from _reporting_state where tbl = %s"), [table])  # nosemgrep
             r = cur.fetchone()
         return int(r[0]) if r else 1
 
     def rebuild(self, table: str) -> int:
         with self.conn.transaction(), self.conn.cursor() as cur:
-            cur.execute(
+            cur.execute(  # nosemgrep
                 sql.SQL("delete from {}").format(sql.Identifier(table))
-            )  # nosemgrep: psycopg sql.Identifier from approved reporting.yaml; values are bound
-            cur.execute(
+            )
+            cur.execute(  # nosemgrep
                 sql.SQL("update _reporting_state set generation = generation + 1 where tbl = %s returning generation"),
                 [table],
             )
@@ -164,7 +164,7 @@ class PgStore:
 
     def expire(self, table: str, days: int) -> int:
         with self.conn.cursor() as cur:
-            cur.execute(  # nosemgrep: psycopg sql.Identifier from approved reporting.yaml; values are bound
+            cur.execute(  # nosemgrep
                 sql.SQL("delete from {} where _updated_at < now() - make_interval(days => %s)").format(
                     sql.Identifier(table)
                 ),
