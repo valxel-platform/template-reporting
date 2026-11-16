@@ -17,4 +17,9 @@ class Settings(BaseSettings):
     kafka_config: dict[str, str] = {}  # security.protocol, sasl.*: as the platform's kafka-user gives them
     # The key for tokenized fields (a secret of this component; the same key gives the same tokens).
     token_key: str = ""
+    # Kafka Connect (reporting-admin connectors): where the connectors live, and the product's lake.
+    connect_namespace: str = ""
+    connect_cluster: str = "valxel-connect"
+    lake_warehouse: str = ""  # s3://<the product's lake bucket>/warehouse
+    lake_database: str = ""  # the Glue database; the component's name by default
     port: int = 8080  # /metrics (and /healthz) for the platform

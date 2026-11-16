@@ -32,6 +32,16 @@ def main(argv: list[str] | None = None, *, store: Store | None = None, out: Text
     if cmd == "check":
         print(f"reporting.yaml is valid: {len(cfg.tables)} tables, {len(cfg.destinations)} destinations", file=out)
         return 0
+    if cmd == "connectors":
+        from .connectors import render
+
+        lake = {k: v for k, v in (("warehouse", s.lake_warehouse), ("database", s.lake_database)) if v}
+        print(
+            render(cfg, namespace=s.connect_namespace or "<namespace>", cluster=s.connect_cluster, lake=lake),
+            file=out,
+            end="",
+        )
+        return 0
     if cmd == "migrate":
         migrate(s.database_url, cfg, contracts)
         print("Migrated.", file=out)
