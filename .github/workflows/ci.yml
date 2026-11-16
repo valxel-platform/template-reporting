@@ -50,7 +50,7 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run mypy
       # reporting.yaml against the contracts it reads and the product's data class: what G4 approved.
-      # The SDLC tool sets the repository variable VALXEL_DATA_CLASS; without it, the strictest class.
+      # A general or payments product sets the repository variable VALXEL_DATA_CLASS; without it, phi (strictest).
       - run: uv run reporting-admin check
         env:
           REPORTING_DATA_CLASS: ${{ vars.VALXEL_DATA_CLASS || 'phi' }}
