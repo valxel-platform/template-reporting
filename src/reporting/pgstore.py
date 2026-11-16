@@ -85,9 +85,9 @@ def ddl(cfg: Config, contracts: Contracts) -> list[sql.Composed | sql.SQL]:
 
 
 def migrate(url: str, cfg: Config, contracts: Contracts) -> None:
-    with psycopg.connect(url, autocommit=True) as conn:
+    with psycopg.connect(url, autocommit=True) as conn, conn.cursor() as cur:
         for stmt in ddl(cfg, contracts):
-            conn.execute(stmt)
+            cur.execute(stmt)
 
 
 class PgStore:
@@ -112,48 +112,53 @@ class PgStore:
             k=self._key(table),
             sets=sql.SQL(", ").join(sql.SQL("{c} = excluded.{c}").format(c=sql.Identifier(c)) for c in cols),
         )
-        cur = self.conn.execute(q, [*values, offset, partition])
-        return cur.rowcount == 1
+        with self.conn.cursor() as cur:
+            cur.execute(q, [*values, offset, partition])
+            return cur.rowcount == 1
 
     def delete(self, table: str, key: str) -> None:
-        self.conn.execute(
-            sql.SQL("delete from {} where {} = %s").format(sql.Identifier(table), self._key(table)), [key]
-        )
+        with self.conn.cursor() as cur:
+            cur.execute(sql.SQL("delete from {} where {} = %s").format(sql.Identifier(table), self._key(table)), [key])
 
     def rows(self, table: str, tenant: str | None = None) -> list[dict[str, Any]]:
         """As a report would see them: through reporting_reader and its tenant, when one is given."""
-        with self.conn.transaction():
+        cols = self.cfg.tables[table].columns
+        with self.conn.transaction(), self.conn.cursor() as cur:
             if tenant is not None:
-                self.conn.execute(sql.SQL("set local role {}").format(sql.Identifier(READER)))
-                self.conn.execute("select set_config('reporting.tenant', %s, true)", [tenant])
-            cur = self.conn.execute(
+                cur.execute(sql.SQL("set local role {}").format(sql.Identifier(READER)))
+                cur.execute(sql.SQL("select set_config('reporting.tenant', %s, true)"), [tenant])
+            cur.execute(
                 sql.SQL("select {} from {}").format(
-                    sql.SQL(", ").join(map(sql.Identifier, self.cfg.tables[table].columns)), sql.Identifier(table)
+                    sql.SQL(", ").join(map(sql.Identifier, cols)), sql.Identifier(table)
                 )
             )
-            names = [d.name for d in cur.description or []]
-            return [dict(zip(names, r, strict=True)) for r in cur.fetchall()]
+            return [dict(zip(cols, r, strict=True)) for r in cur.fetchall()]
 
     def generation(self, table: str) -> int:
-        r = self.conn.execute("select generation from _reporting_state where tbl = %s", [table]).fetchone()
+        with self.conn.cursor() as cur:
+            cur.execute(sql.SQL("select generation from _reporting_state where tbl = %s"), [table])
+            r = cur.fetchone()
         return int(r[0]) if r else 1
 
     def rebuild(self, table: str) -> int:
-        with self.conn.transaction():
-            self.conn.execute(sql.SQL("delete from {}").format(sql.Identifier(table)))
-            r = self.conn.execute(
-                "update _reporting_state set generation = generation + 1 where tbl = %s returning generation", [table]
-            ).fetchone()
+        with self.conn.transaction(), self.conn.cursor() as cur:
+            cur.execute(sql.SQL("delete from {}").format(sql.Identifier(table)))
+            cur.execute(
+                sql.SQL("update _reporting_state set generation = generation + 1 where tbl = %s returning generation"),
+                [table],
+            )
+            r = cur.fetchone()
         return int(r[0]) if r else 1
 
     def expire(self, table: str, days: int) -> int:
-        cur = self.conn.execute(
-            sql.SQL("delete from {} where _updated_at < now() - make_interval(days => %s)").format(
-                sql.Identifier(table)
-            ),
-            [days],
-        )
-        return cur.rowcount
+        with self.conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("delete from {} where _updated_at < now() - make_interval(days => %s)").format(
+                    sql.Identifier(table)
+                ),
+                [days],
+            )
+            return cur.rowcount
 
     def close(self) -> None:
         self.conn.close()
