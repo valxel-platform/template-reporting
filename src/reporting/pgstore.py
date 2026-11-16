@@ -11,8 +11,7 @@
     reads its topics from the start again with a new consumer group.
 
 Every statement is composed with psycopg's sql module: table and column names come from the
-approved reporting.yaml and are quoted as identifiers, and every value is a bound parameter. That is
-why the lines Semgrep's raw-SQL rule flags carry a nosemgrep marker.
+approved reporting.yaml and are quoted as identifiers, and every value is a bound parameter.
 
 The sink connects as the owner. Reports connect as a login that is a member of reporting_reader.
 Columns are only ever added: a field dropped from reporting.yaml stays until a person drops it.
@@ -94,6 +93,11 @@ def migrate(url: str, cfg: Config, contracts: Contracts) -> None:
             cur.execute(stmt)
 
 
+def _q(*parts: str | sql.Composable) -> sql.Composed:
+    """A statement from fixed SQL text and composed parts (identifiers, lists), never from values."""
+    return sql.Composed([sql.SQL(p) if isinstance(p, str) else p for p in parts])
+
+
 class PgStore:
     def __init__(self, url: str, cfg: Config) -> None:
         self.url, self.cfg = url, cfg
@@ -105,57 +109,53 @@ class PgStore:
     def upsert(self, table: str, key: str, row: dict[str, Any], offset: int, partition: int = 0) -> bool:
         cols = list(row)
         values = [json.dumps(v) if isinstance(v, (dict, list)) else v for v in row.values()]
-        q = sql.SQL(
-            "insert into {t} ({cols}, _offset, _partition, _updated_at) values ({vals}, %s, %s, now()) "
-            "on conflict ({k}) do update set {sets}, _offset = excluded._offset, _partition = excluded._partition, "
-            "_updated_at = now() where {t}._partition <> excluded._partition or {t}._offset < excluded._offset"
-        ).format(
-            t=sql.Identifier(table),
-            cols=sql.SQL(", ").join(map(sql.Identifier, cols)),
-            vals=sql.SQL(", ").join(sql.Placeholder() * len(cols)),
-            k=self._key(table),
-            sets=sql.SQL(", ").join(sql.SQL("{c} = excluded.{c}").format(c=sql.Identifier(c)) for c in cols),
+        t, k = sql.Identifier(table), self._key(table)
+        sets = sql.SQL(", ").join(_q(sql.Identifier(c), " = excluded.", sql.Identifier(c)) for c in cols)
+        q = _q(
+            "insert into ",
+            t,
+            " (",
+            sql.SQL(", ").join(map(sql.Identifier, cols)),
+            ", _offset, _partition, _updated_at) values (",
+            sql.SQL(", ").join(sql.Placeholder() * len(cols)),
+            ", %s, %s, now()) on conflict (",
+            k,
+            ") do update set ",
+            sets,
+            ", _offset = excluded._offset, _partition = excluded._partition, _updated_at = now() where ",
+            t,
+            "._partition <> excluded._partition or ",
+            t,
+            "._offset < excluded._offset",
         )
         with self.conn.cursor() as cur:
-            cur.execute(  # nosemgrep
-                q, [*values, offset, partition]
-            )
+            cur.execute(q, [*values, offset, partition])
             return cur.rowcount == 1
 
     def delete(self, table: str, key: str) -> None:
         with self.conn.cursor() as cur:
-            cur.execute(  # nosemgrep
-                sql.SQL("delete from {} where {} = %s").format(sql.Identifier(table), self._key(table)), [key]
-            )
+            cur.execute(_q("delete from ", sql.Identifier(table), " where ", self._key(table), " = %s"), [key])
 
     def rows(self, table: str, tenant: str | None = None) -> list[dict[str, Any]]:
         """As a report would see them: through reporting_reader and its tenant, when one is given."""
         cols = self.cfg.tables[table].columns
         with self.conn.transaction(), self.conn.cursor() as cur:
             if tenant is not None:
-                cur.execute(  # nosemgrep
-                    sql.SQL("set local role {}").format(sql.Identifier(READER))
-                )
-                cur.execute(sql.SQL("select set_config('reporting.tenant', %s, true)"), [tenant])  # nosemgrep
-            cur.execute(  # nosemgrep
-                sql.SQL("select {} from {}").format(
-                    sql.SQL(", ").join(map(sql.Identifier, cols)), sql.Identifier(table)
-                )
-            )
+                cur.execute(_q("set local role ", sql.Identifier(READER)))
+                cur.execute(sql.SQL("select set_config('reporting.tenant', %s, true)"), [tenant])
+            cur.execute(_q("select ", sql.SQL(", ").join(map(sql.Identifier, cols)), " from ", sql.Identifier(table)))
             return [dict(zip(cols, r, strict=True)) for r in cur.fetchall()]
 
     def generation(self, table: str) -> int:
         with self.conn.cursor() as cur:
-            cur.execute(sql.SQL("select generation from _reporting_state where tbl = %s"), [table])  # nosemgrep
+            cur.execute(sql.SQL("select generation from _reporting_state where tbl = %s"), [table])
             r = cur.fetchone()
         return int(r[0]) if r else 1
 
     def rebuild(self, table: str) -> int:
         with self.conn.transaction(), self.conn.cursor() as cur:
-            cur.execute(  # nosemgrep
-                sql.SQL("delete from {}").format(sql.Identifier(table))
-            )
-            cur.execute(  # nosemgrep
+            cur.execute(_q("delete from ", sql.Identifier(table)))
+            cur.execute(
                 sql.SQL("update _reporting_state set generation = generation + 1 where tbl = %s returning generation"),
                 [table],
             )
@@ -164,10 +164,8 @@ class PgStore:
 
     def expire(self, table: str, days: int) -> int:
         with self.conn.cursor() as cur:
-            cur.execute(  # nosemgrep
-                sql.SQL("delete from {} where _updated_at < now() - make_interval(days => %s)").format(
-                    sql.Identifier(table)
-                ),
+            cur.execute(
+                _q("delete from ", sql.Identifier(table), " where _updated_at < now() - make_interval(days => %s)"),
                 [days],
             )
             return cur.rowcount
