@@ -1,0 +1,19 @@
+# What becomes a report, and where it goes. Agents write this from the HLD's Reporting section;
+# people approve it at G4 with the data contracts it reads (contracts/). The example is an EMR:
+# clinic staff report on notes inside the product (identified, under its BAA), the history goes to
+# the product's lake, and a customer's warehouse gets a de-identified copy. Synthetic only.
+name: template-reporting
+topic_prefix: emr.reporting
+tables:
+  notes:
+    from: emr.notes
+    key: note_id
+    tenant: clinic_id
+    fields: [note_id, kind, signed_at, clinic_id]
+    tokenize: [patient_id]
+    generalize: { signed_at: year }
+    retention_days: 2555
+destinations:
+  store: { type: postgres, tables: [notes] }
+  lake: { type: iceberg, tables: [notes] }
+  customer-warehouse: { type: snowflake, tables: [notes], deidentified: true }

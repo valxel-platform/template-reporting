@@ -1,0 +1,4 @@
+# Files that carry this template's name. When the SDLC tool creates a repo from the template, it
+# replaces the template's name with the new component's in each: reporting.yaml's name starts
+# every consumer group, and Kafka allows only groups that start with the component's name.
+reporting.yaml
