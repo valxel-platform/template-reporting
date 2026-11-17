@@ -4,9 +4,12 @@
   - one table per reporting table, its columns typed from the contract (text, bigint, double
     precision, boolean, date, timestamptz, jsonb), keyed by the table's key, with _offset,
     _partition and _updated_at;
-  - row-level security on tables with a tenant: reporting_reader sees a row only when the
-    session's `reporting.tenant` setting names its tenant (set it per login or connection pool in
-    the BI tool, never in a query people can edit). Reports across tenants need a role made for it;
+  - row-level security on tables with a tenant: a report login (a member of reporting_reader) sees
+    a row only when _reporting_logins maps that login to the row's tenant. The database decides,
+    from the login the connection was made with (session_user): nothing a report's SQL can set,
+    and SET ROLE doesn't change it. A login with no mapping sees no tenant's rows. Mappings are
+    managed with `reporting-admin grant-tenant` and `revoke-tenant` (audited); reports across
+    tenants need a role made for them;
   - _reporting_state: each table's generation, which `reporting-admin rebuild` raises so the sink
     reads its topics from the start again with a new consumer group.
 
@@ -50,6 +53,20 @@ def ddl(cfg: Config, contracts: Contracts) -> list[sql.Composed | sql.SQL]:
     out: list[sql.Composed | sql.SQL] = [
         sql.SQL("create table if not exists _reporting_state (tbl text primary key, generation int not null)"),
         sql.SQL(f"do $$ begin create role {READER} nologin; exception when duplicate_object then null; end $$"),
+        # Which report logins see which tenants. Readers can't read or change it; the function the
+        # policies call can, for the connection's own login only.
+        sql.SQL(
+            "create table if not exists _reporting_logins (login text not null, tenant text not null,"
+            " primary key (login, tenant))"
+        ),
+        sql.SQL("revoke all on _reporting_logins from public"),
+        sql.SQL(
+            "create or replace function reporting_tenants() returns setof text language sql stable"
+            " security definer set search_path = pg_catalog, public as"
+            " $$ select tenant from public._reporting_logins where login = session_user $$"
+        ),
+        sql.SQL("revoke all on function reporting_tenants() from public"),
+        sql.SQL(f"grant execute on function reporting_tenants() to {READER}"),
     ]
     for t in cfg.tables.values():
         c = contracts.for_dataset(t.dataset)
@@ -80,8 +97,7 @@ def ddl(cfg: Config, contracts: Contracts) -> list[sql.Composed | sql.SQL]:
                 sql.SQL("alter table {} enable row level security").format(name),
                 sql.SQL("drop policy if exists tenant_rows on {}").format(name),
                 sql.SQL(
-                    "create policy tenant_rows on {} for select to {} using ({} = "
-                    "current_setting('reporting.tenant', true))"
+                    "create policy tenant_rows on {} for select to {} using ({} in (select reporting_tenants()))"
                 ).format(name, sql.Identifier(READER), sql.Identifier(t.tenant)),
             ]
     return out
@@ -137,14 +153,30 @@ class PgStore:
             cur.execute(_q("delete from ", sql.Identifier(table), " where ", self._key(table), " = %s"), [key])
 
     def rows(self, table: str, tenant: str | None = None) -> list[dict[str, Any]]:
-        """As a report would see them: through reporting_reader and its tenant, when one is given."""
+        """Every row, as the owner (the sink) sees them. Reports see theirs through their own login."""
         cols = self.cfg.tables[table].columns
-        with self.conn.transaction(), self.conn.cursor() as cur:
-            if tenant is not None:
-                cur.execute(_q("set local role ", sql.Identifier(READER)))
-                cur.execute(sql.SQL("select set_config('reporting.tenant', %s, true)"), [tenant])
+        with self.conn.cursor() as cur:
             cur.execute(_q("select ", sql.SQL(", ").join(map(sql.Identifier, cols)), " from ", sql.Identifier(table)))
-            return [dict(zip(cols, r, strict=True)) for r in cur.fetchall()]
+            out = [dict(zip(cols, r, strict=True)) for r in cur.fetchall()]
+        col = self.cfg.tables[table].tenant
+        return [r for r in out if tenant is None or (col and r.get(col) == tenant)]
+
+    def grant_tenant(self, login: str, tenant: str) -> None:
+        """Let a report login see a tenant's rows."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("insert into _reporting_logins values (%s, %s) on conflict do nothing"), [login, tenant]
+            )
+
+    def revoke_tenant(self, login: str, tenant: str) -> bool:
+        with self.conn.cursor() as cur:
+            cur.execute(sql.SQL("delete from _reporting_logins where login = %s and tenant = %s"), [login, tenant])
+            return bool(cur.rowcount)
+
+    def tenant_grants(self) -> list[tuple[str, str]]:
+        with self.conn.cursor() as cur:
+            cur.execute(sql.SQL("select login, tenant from _reporting_logins order by login, tenant"))
+            return [(str(a), str(b)) for a, b in cur.fetchall()]
 
     def generation(self, table: str) -> int:
         with self.conn.cursor() as cur:
