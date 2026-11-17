@@ -47,3 +47,7 @@ def test_migrate_needs_a_database(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(admin, "migrate", lambda url, cfg, contracts: calls.append(url))
     monkeypatch.setenv("REPORTING_DATABASE_URL", "postgresql://example")
     assert run("migrate") == (0, "Migrated.\n") and calls == ["postgresql://example"]
+
+
+def test_tenant_grants_live_in_postgres() -> None:
+    assert run("grant-tenant", "report_north", "north-clinic") == (1, "Tenant grants live in the product's Postgres.\n")

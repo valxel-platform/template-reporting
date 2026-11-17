@@ -5,6 +5,9 @@ migrate   create or extend the store's tables, their row-level security and the 
 status    each table's generation and row count
 rebuild   empty a table and read its topic from the start again (a new consumer group)
 expire    remove rows untouched for longer than each table's retention_days (run daily)
+grant-tenant <login> <tenant>    let a report login see a tenant's rows (the only way it sees any)
+revoke-tenant <login> <tenant>   take that away
+tenants   which report logins see which tenants
 """
 
 from __future__ import annotations
@@ -78,6 +81,34 @@ def main(
                 removed = st.expire(name, t.retention_days)
                 audited("reporting.rows.expired", name, removed=removed, retention_days=t.retention_days)
                 print(f"{name}: removed {removed} rows", file=out)
+        return 0
+    if cmd in ("grant-tenant", "revoke-tenant", "tenants"):
+        if not isinstance(st, PgStore):
+            print("Tenant grants live in the product's Postgres.", file=out)
+            return 1
+        if cmd == "tenants":
+            for login, tenant in st.tenant_grants():
+                print(f"{login}: {tenant}", file=out)
+            return 0
+        if len(args) != 3 or not all(args[1:]):
+            print(f"usage: reporting-admin {cmd} <login> <tenant>", file=out)
+            return 2
+        login, tenant = args[1], args[2]
+        changed = True
+        if cmd == "grant-tenant":
+            st.grant_tenant(login, tenant)
+        else:
+            changed = st.revoke_tenant(login, tenant)
+        who = Actor(id=s.actor, type="user") if s.actor else Actor(id=COMPONENT, type="service")
+        from .app import auditor
+
+        (audit or auditor(s)).record(
+            f"reporting.tenant.{'granted' if cmd == 'grant-tenant' else 'revoked'}",
+            actor=who,
+            resource=("reporting_login", [login]),
+            details={"tenant": tenant, "changed": changed},
+        )
+        print(f"{login}: {'can' if cmd == 'grant-tenant' else 'can no longer'} see {tenant}", file=out)
         return 0
     print(__doc__, file=out)
     return 2
