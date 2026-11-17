@@ -24,10 +24,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from opentelemetry import propagate
+
 from .config import Config, Table
 from .contracts import ContractError, Contracts, count, summary_line
 from .rules import row
 from .store import Store
+from .telemetry import tracer
 
 log = logging.getLogger("reporting.sink")
 
@@ -106,7 +109,22 @@ class Runner(threading.Thread):
         if msg.error():
             log.warning("%s: Kafka: %s", self.group, msg.error())
             return
+        attributes: dict[str, str | int] = {
+            "reporting.dataset": self.contract.dataset,
+            "reporting.table": self.table.name,
+            "reporting.output": self.output.kind,
+            "messaging.kafka.offset": int(msg.offset() or 0),
+        }
+        with tracer().start_as_current_span(
+            "reporting.apply", context=producer_context(msg), attributes=attributes
+        ) as span:
+            outcome = self._step(msg)
+            span.set_attribute("reporting.outcome", outcome)
+
+    def _step(self, msg: Any) -> str:
+        """Apply one event; returns how it went: applied, parked, skipped or retry."""
         dataset = self.contract.dataset
+        outcome = "applied"
         try:
             self.apply(msg)
             if self.primary:
@@ -124,6 +142,8 @@ class Runner(threading.Thread):
                     ],
                 )
                 count(dataset, "parked")
+            outcome = "parked"
+            if self.primary:
                 log.error(
                     "reporting.event_parked dataset=%s field=%s breaks the data contract (%s) offset=%s",
                     exc.dataset,
@@ -134,13 +154,15 @@ class Runner(threading.Thread):
         except (ValueError, KeyError, TypeError) as exc:  # unreadable: skipped, never retried forever
             if self.primary:
                 count(dataset, "skipped")
+            outcome = "skipped"
             log.error("%s: skipped an unreadable event at offset %s (%s)", self.group, msg.offset(), type(exc).__name__)
         except Exception:  # the store or Kafka: the same record again shortly
             log.exception("%s: couldn't apply the event at offset %s; retrying", self.group, msg.offset())
             self.consumer.seek(_partition(msg))
             self.stop.wait(5)
-            return
+            return "retry"
         self.consumer.commit(message=msg, asynchronous=False)
+        return outcome
 
     def apply(self, msg: Any) -> None:
         event = json.loads(msg.value())
@@ -164,6 +186,38 @@ class Runner(threading.Thread):
             self.store.upsert(t.name, key, r, msg.offset(), msg.partition())
         else:
             self._produce(self.cfg.topic(t.name, self.output.deidentified), key, json.dumps(r, default=str).encode())
+
+
+def producer_context(msg: Any) -> Any:
+    """The trace the event's producer was in, from its traceparent (or CloudEvents ce_traceparent) header."""
+    carrier = {}
+    for k, v in getattr(msg, "headers", lambda: None)() or []:
+        name = k[3:] if k.startswith("ce_") else k
+        if name in ("traceparent", "tracestate") and v is not None:
+            carrier[name] = v.decode() if isinstance(v, bytes) else str(v)
+    return propagate.extract(carrier) if carrier else None
+
+
+def flow(cfg: Config) -> dict[str, Any]:
+    """Where data goes, for the audit trail: each destination's tables, and per table the fields
+    kept as they are, tokenized and generalized. Field names only, never values."""
+    return {
+        "tables": {
+            n: {
+                "dataset": t.dataset,
+                "fields": list(t.fields),
+                "tokenized": list(t.tokenize),
+                "generalized": dict(t.generalize),
+                "tenant": t.tenant,
+                "retention_days": t.retention_days,
+            }
+            for n, t in sorted(cfg.tables.items())
+        },
+        "destinations": {
+            n: {"type": d.type, "tables": list(d.tables), "deidentified": d.deidentified}
+            for n, d in sorted(cfg.destinations.items())
+        },
+    }
 
 
 class Sink:

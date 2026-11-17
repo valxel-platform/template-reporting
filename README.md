@@ -13,6 +13,8 @@ Valxel builds one per product during the build, from the HLD's Reporting section
 | Lake and exports | `iceberg`, `snowflake`, `bigquery`, `s3`, `jdbc`: written by Kafka Connect (Iceberg sink, warehouse connectors) from the filtered topics `<topic_prefix>.<table>.v1` and `.deid.v1`, never from the source | Connect can only send what reporting.yaml allows |
 | Destinations | At least one. A PHI product keeps a store or a lake in its own account, and its exports are de-identified. Each output reads with its own consumer group (`<name>.<table>.<output>.g<generation>`), so a slow one never holds up another | The design's decisions 8 and 9 |
 | Reconciliation | Every event is counted per dataset (`reporting_dataset_events_total`) and summed in a `valxel.datasets {...}` line a minute, which the SDLC tool reconciles in staging | Nothing published goes missing on its way to a report |
+| Audit trail | When the sink starts, `reporting.flow.started` records which fields of which tables go to which destinations: kept, tokenized or generalized, field names only. `rebuild` and `expire` record what they changed and who ran them (`REPORTING_ACTOR`). Records go to the product's audit topic as `valxel.audit.v1`. For payments and PHI they're required (the sink doesn't start without one) and Kafka must use TLS | Anyone can see where a product's data went, and who changed the reporting store |
+| Observability | JSON log lines with trace ids. Each applied event is a `reporting.apply` span in the producer's trace (from its `traceparent` or `ce_traceparent` header), with its Postgres statements beneath it. Errors go to Sentry or GlitchTip (`SENTRY_DSN`), scrubbed and tagged with the component | A record can be followed from the request that changed it to the report it lands in |
 | Rebuild and retention | `reporting-admin rebuild <table>` empties a table and reads its topic from the start with new groups; `reporting-admin expire` (daily) removes rows untouched for `retention_days` | Reports never keep data longer than the source may |
 
 ## Run it
@@ -26,8 +28,15 @@ REPORTING_DATABASE_URL=... REPORTING_KAFKA_BOOTSTRAP=... REPORTING_TOKEN_KEY=...
 
 Settings (`REPORTING_`): `CONFIG_PATH`, `CONTRACTS_DIR`, `DATA_CLASS`, `DATABASE_URL` (the store's
 owner), `KAFKA_BOOTSTRAP`, `KAFKA_CONFIG` (JSON: the platform's kafka-user gives SASL settings),
-`TOKEN_KEY`, `PORT` (`/metrics`, `/healthz`). Without a database and Kafka the process stays idle,
-serving metrics.
+`TOKEN_KEY`, `PORT` (`/metrics`, `/healthz`), `PRODUCT`, `ENVIRONMENT`, `AUDIT_SINK` (`kafka` in
+environments, with `AUDIT_KAFKA_BOOTSTRAP`, `AUDIT_TOPIC` and `AUDIT_KAFKA_CONFIG`), `AUDIT_REQUIRED`,
+`ACTOR` (who runs reporting-admin). Also `SENTRY_DSN` and `OTEL_EXPORTER_OTLP_ENDPOINT`. Without a
+database and Kafka the process stays idle, serving metrics.
+
+Where each of the platform's capabilities lives (security, observability, audit, business
+metrics) is listed in `.valxel/capabilities.yaml`, which the platform's daily check reads
+(agentic-sdlc `config/template-contract.yaml`). `supply-chain-pins` keeps base images pinned to
+their digests.
 
 ## Not here
 

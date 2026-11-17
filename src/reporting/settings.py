@@ -23,3 +23,15 @@ class Settings(BaseSettings):
     lake_warehouse: str = ""  # s3://<the product's lake bucket>/warehouse
     lake_database: str = ""  # the Glue database; the component's name by default
     port: int = 8080  # /metrics (and /healthz) for the platform
+    product: str = ""  # the product's id, e.g. emr: in audit records
+    # Audit trail (audit.py): "kafka" in deployed environments, "log" locally. Required (a sink that
+    # can't record where data goes doesn't start) for payments and PHI unless set.
+    audit_sink: str = "log"
+    audit_kafka_bootstrap: str = ""
+    audit_topic: str = "audit.v1"
+    audit_kafka_config: dict[str, str] = {}  # security.protocol, sasl.*: TLS for payments and PHI
+    audit_required: bool | None = None
+    environment: str = ""  # dev | staging | production, in audit records
+    # Who runs reporting-admin (a person's id, from the platform's exec or the pipeline): the actor
+    # of the audit records for rebuild, expire and connectors. Unset: the component itself.
+    actor: str = ""
