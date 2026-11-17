@@ -12,6 +12,8 @@ from __future__ import annotations
 import sys
 from typing import TextIO
 
+from .audit import Actor, Auditor
+from .component import COMPONENT
 from .config import ConfigError, load
 from .contracts import Contracts
 from .pgstore import PgStore, migrate
@@ -19,7 +21,13 @@ from .settings import Settings
 from .store import Store
 
 
-def main(argv: list[str] | None = None, *, store: Store | None = None, out: TextIO = sys.stdout) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    store: Store | None = None,
+    out: TextIO = sys.stdout,
+    audit: Auditor | None = None,
+) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     s = Settings()
     contracts = Contracts.load(s.contracts_dir)
@@ -47,17 +55,29 @@ def main(argv: list[str] | None = None, *, store: Store | None = None, out: Text
         print("Migrated.", file=out)
         return 0
     st = store or PgStore(s.database_url, cfg)
+
+    def audited(action: str, table: str, **details: object) -> None:
+        """Who changed the store, and what: the person running the command, or the component."""
+        from .app import auditor
+
+        who = Actor(id=s.actor, type="user") if s.actor else Actor(id=COMPONENT, type="service")
+        (audit or auditor(s)).record(action, actor=who, resource=("reporting_table", [table]), details=dict(details))
+
     if cmd == "status":
         for name in cfg.tables:
             print(f"{name}: generation {st.generation(name)}, {len(st.rows(name))} rows", file=out)
         return 0
     if cmd == "rebuild" and len(args) > 1 and args[1] in cfg.tables:
-        print(f"{args[1]}: emptied; generation {st.rebuild(args[1])} reads its topic from the start", file=out)
+        gen = st.rebuild(args[1])
+        audited("reporting.table.rebuilt", args[1], generation=gen)
+        print(f"{args[1]}: emptied; generation {gen} reads its topic from the start", file=out)
         return 0
     if cmd == "expire":
         for name, t in cfg.tables.items():
             if t.retention_days:
-                print(f"{name}: removed {st.expire(name, t.retention_days)} rows", file=out)
+                removed = st.expire(name, t.retention_days)
+                audited("reporting.rows.expired", name, removed=removed, retention_days=t.retention_days)
+                print(f"{name}: removed {removed} rows", file=out)
         return 0
     print(__doc__, file=out)
     return 2
