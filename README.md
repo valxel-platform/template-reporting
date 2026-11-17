@@ -33,5 +33,10 @@ serving metrics.
 
 - **Audit of report queries.** Reports read Postgres directly (Metabase, Superset), so audit them
   in the database: pgaudit on `reporting_reader` logins, shipped to the product's audit topic.
-- **The lake's expiry.** Iceberg partitions expire by the table's retention in the Connect
-  connector's settings (the SDLC tool writes them from `reporting.yaml`).
+- **The lake's expiry.** Rows in the lake are kept until an Iceberg maintenance job removes those
+  past the table's `retention_days`; that job is the platform's (with the lake bucket), not this
+  repo's.
+- **Kafka Connect itself.** `reporting-admin connectors` renders the connectors (Strimzi
+  `KafkaConnector`s, one per destination and table, each reading only its filtered topic, with
+  credentials from Secrets). The Connect cluster, its plugins, the lake bucket and Glue database,
+  and Connect's Kafka identity come from the platform.
