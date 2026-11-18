@@ -1,0 +1,18 @@
+# The template conformance suite (.github/scripts/conformance.py, managed by the platform): the built
+# image does what every reporting repo must. It starts against its own database and Kafka, sets up
+# its tables and audits what flows where.
+image: "ci"  # the tag CI builds
+command: "uv run reporting-sink"  # conformance.py local: the sink as a process
+port: 8080
+ready: /healthz
+postgres: "postgres:17-alpine"
+kafka: "apache/kafka:4.1.0"
+env:
+  REPORTING_DATABASE_URL: "{postgres}"
+  REPORTING_KAFKA_BOOTSTRAP: "{kafka}"
+  REPORTING_TOKEN_KEY: conformance-token-key-0123456789abcdef
+  REPORTING_PRODUCT: conformance
+  REPORTING_ENVIRONMENT: ci
+  REPORTING_DATA_CLASS: general
+  REPORTING_AUDIT_SINK: log
+checks: [audit, tracing]
