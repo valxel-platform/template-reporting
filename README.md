@@ -38,6 +38,12 @@ metrics) is listed in `.valxel/capabilities.yaml`, which the platform's daily ch
 (agentic-sdlc `config/template-contract.yaml`). `supply-chain-pins` keeps base images pinned to
 their digests.
 
+## Ports
+
+`/metrics` and `/healthz` are on `REPORTING_PORT`, 8081: the management port, as in every template.
+The sink serves no API. The product's mesh lets the platform's metrics collector reach that port
+and no other.
+
 ## Not here
 
 - **Audit of report queries.** Reports read Postgres directly (Metabase, Superset), so audit them

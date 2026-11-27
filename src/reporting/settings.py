@@ -22,7 +22,9 @@ class Settings(BaseSettings):
     connect_cluster: str = "valxel-connect"
     lake_warehouse: str = ""  # s3://<the product's lake bucket>/warehouse
     lake_database: str = ""  # the Glue database; the component's name by default
-    port: int = 8080  # /metrics (and /healthz) for the platform
+    # /metrics (and /healthz) for the platform, on the management port as in every template (8081):
+    # the mesh lets the data plane's metrics collector reach that port only. The sink serves no API.
+    port: int = 8081
     product: str = ""  # the product's id, e.g. emr: in audit records
     # Audit trail (audit.py): "kafka" in deployed environments, "log" locally. Required (a sink that
     # can't record where data goes doesn't start) for payments and PHI unless set.
