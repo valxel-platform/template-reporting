@@ -18,6 +18,7 @@ from typing import TextIO
 from .audit import Actor, Auditor
 from .component import COMPONENT
 from .config import ConfigError, load
+from .connect import database_url
 from .contracts import Contracts
 from .pgstore import PgStore, migrate
 from .settings import Settings
@@ -54,10 +55,10 @@ def main(
         )
         return 0
     if cmd == "migrate":
-        migrate(s.database_url, cfg, contracts)
+        migrate(database_url(s), cfg, contracts, s.pg_role)
         print("Migrated.", file=out)
         return 0
-    st = store or PgStore(s.database_url, cfg)
+    st = store or PgStore(database_url(s), cfg, s.pg_role)
 
     def audited(action: str, table: str, **details: object) -> None:
         """Who changed the store, and what: the person running the command, or the component."""

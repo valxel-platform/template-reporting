@@ -8,7 +8,7 @@ Valxel builds one per product during the build, from the HLD's Reporting section
 | What | How | Why |
 | --- | --- | --- |
 | Inputs | Each table reads one dataset's topic (its approved ODCS contract, in `contracts/`, written by the SDLC tool and shipped in the image). Unknown properties are dropped, the rest checked; an event that breaks its contract is parked on `<topic>.dlt`, naming the field and never the value | Nothing unapproved reaches a report, and nothing reads GitHub at run time |
-| Field rules | `fields` are kept, `tokenize` become a keyed HMAC (`REPORTING_TOKEN_KEY`), `generalize` cuts a value (`year`, `zip3`) for de-identified destinations. `secret` never leaves; a de-identified destination never gets a `pii` or `phi` value | Reports can count and join without holding people's data where they don't need it |
+| Field rules | `fields` are kept, `tokenize` become a keyed HMAC with the database's own versioned key (postgres-login's tokenize function; the key never reaches the sink, tokens read `v2:...`), `generalize` cuts a value (`year`, `zip3`) for de-identified destinations. `secret` never leaves; a de-identified destination never gets a `pii` or `phi` value, and gets tokens only when `reporting.yaml` records an `expert_determination` (a token is derived from the value, which Safe Harbor doesn't allow as a code, 45 CFR 164.514(c)) | Reports can count and join without holding people's data where they don't need it |
 | Store | `type: postgres`: one current-state table per reporting table, typed from the contract, rows that only move forward (Kafka offset), deletions applied. Row-level security by `tenant`: a report login (a member of `reporting_reader`) sees a row only when `reporting-admin grant-tenant <login> <tenant>` gave it that tenant. The database decides from the login itself, so nothing a report's SQL sets can widen it | Clinic staff see only their clinic, in the product's own database |
 | Lake and exports | `iceberg`, `snowflake`, `bigquery`, `s3`, `jdbc`: written by Kafka Connect (Iceberg sink, warehouse connectors) from the filtered topics `<topic_prefix>.<table>.v1` and `.deid.v1`, never from the source | Connect can only send what reporting.yaml allows |
 | Destinations | At least one. A PHI product keeps a store or a lake in its own account, and its exports are de-identified. Each output reads with its own consumer group (`<name>.<table>.<output>.g<generation>`), so a slow one never holds up another | The design's decisions 8 and 9 |
@@ -26,9 +26,13 @@ REPORTING_TEST_DATABASE_URL=postgresql://... uv run pytest
 REPORTING_DATABASE_URL=... REPORTING_KAFKA_BOOTSTRAP=... REPORTING_TOKEN_KEY=... uv run reporting-sink
 ```
 
-Settings (`REPORTING_`): `CONFIG_PATH`, `CONTRACTS_DIR`, `DATA_CLASS`, `DATABASE_URL` (the store's
-owner), `KAFKA_BOOTSTRAP`, `KAFKA_CONFIG` (JSON: the platform's kafka-user gives SASL settings),
-`TOKEN_KEY`, `PORT` (`/metrics`, `/healthz`), `PRODUCT`, `ENVIRONMENT`, `AUDIT_SINK` (`kafka` in
+Settings (`REPORTING_`): `CONFIG_PATH`, `CONTRACTS_DIR`, `DATA_CLASS`; the store, as this
+component's own login (platform-resources `postgres-login`, access owner, constitution VX-20):
+`PG_HOST`, `PG_PORT`, `PG_DATABASE`, `PG_USER`, `PG_AUTH` (`gcp-iam` or `azure-entra`: a short-lived
+token from the workload identity, no password), `PG_ROLE` (the store's owner role, SET after signing
+in, so the tables belong to it) and `TOKENIZE_FUNCTION` (the database's own key); locally
+`DATABASE_URL` and `TOKEN_KEY` instead; `KAFKA_BOOTSTRAP`, `KAFKA_CONFIG` (JSON: the platform's
+kafka-user gives SASL settings), `PORT` (`/metrics`, `/healthz`), `PRODUCT`, `ENVIRONMENT`, `AUDIT_SINK` (`kafka` in
 environments, with `AUDIT_KAFKA_BOOTSTRAP`, `AUDIT_TOPIC` and `AUDIT_KAFKA_CONFIG`), `AUDIT_REQUIRED`,
 `ACTOR` (who runs reporting-admin). Also `SENTRY_DSN` and `OTEL_EXPORTER_OTLP_ENDPOINT`. Without a
 database and Kafka the process stays idle, serving metrics.
