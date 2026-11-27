@@ -115,6 +115,8 @@ def connect(url: str, role: str = "") -> psycopg.Connection[Any]:
     """A connection as the component's login, acting as the store's owner role when there is one."""
     conn = psycopg.connect(url, autocommit=True)
     if role:
+        # Composed with psycopg.sql: the role is a quoted identifier, never text in the statement.
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
         conn.execute(sql.SQL("set role {}").format(sql.Identifier(role)))
     return conn
 
@@ -140,6 +142,8 @@ def tokenizer(url: str, function: str, cache: int = 100_000) -> Callable[[str], 
     @functools.lru_cache(maxsize=cache)
     def tokenize(value: str) -> str:
         with lock:
+            # Composed with psycopg.sql (identifiers), the value a bound parameter.
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
             row = conn.execute(q, [value]).fetchone()
         if not row or row[0] is None:
             raise ValueError("the database's tokenize function returned nothing")
