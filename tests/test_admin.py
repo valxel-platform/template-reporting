@@ -44,7 +44,7 @@ def test_an_invalid_config_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_migrate_needs_a_database(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = []
-    monkeypatch.setattr(admin, "migrate", lambda url, cfg, contracts: calls.append(url))
+    monkeypatch.setattr(admin, "migrate", lambda url, cfg, contracts, role="": calls.append(url))
     monkeypatch.setenv("REPORTING_DATABASE_URL", "postgresql://example")
     assert run("migrate") == (0, "Migrated.\n") and calls == ["postgresql://example"]
 

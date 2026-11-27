@@ -16,13 +16,17 @@
 Every statement is composed with psycopg's sql module: table and column names come from the
 approved reporting.yaml and are quoted as identifiers, and every value is a bound parameter.
 
-The sink connects as the owner. Reports connect as a login that is a member of reporting_reader.
+The sink connects as its own login and acts as the store's owner role (SET ROLE, postgres-login
+access owner), so the tables belong to that role. reporting_reader is made by the platform
+(grantRoles) where this login can't create roles; locally, by the sink. Reports connect as a login
+that is a member of reporting_reader.
 Columns are only ever added: a field dropped from reporting.yaml stays until a person drops it.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 
 import psycopg
@@ -52,7 +56,11 @@ def column_type(prop: dict[str, Any], tokenized: bool = False) -> str:
 def ddl(cfg: Config, contracts: Contracts) -> list[sql.Composed | sql.SQL]:
     out: list[sql.Composed | sql.SQL] = [
         sql.SQL("create table if not exists _reporting_state (tbl text primary key, generation int not null)"),
-        sql.SQL(f"do $$ begin create role {READER} nologin; exception when duplicate_object then null; end $$"),
+        # The platform makes it (postgres-login grantRoles); a local superuser makes it here.
+        sql.SQL(
+            "do $$ begin if not exists (select 1 from pg_roles where rolname = {}) then create role {} nologin; end if;"
+            " end $$"
+        ).format(sql.Literal(READER), sql.Identifier(READER)),
         # Which report logins see which tenants. Readers can't read or change it; the function the
         # policies call can, for the connection's own login only.
         sql.SQL(
@@ -103,10 +111,41 @@ def ddl(cfg: Config, contracts: Contracts) -> list[sql.Composed | sql.SQL]:
     return out
 
 
-def migrate(url: str, cfg: Config, contracts: Contracts) -> None:
-    with psycopg.connect(url, autocommit=True) as conn, conn.cursor() as cur:
+def connect(url: str, role: str = "") -> psycopg.Connection[Any]:
+    """A connection as the component's login, acting as the store's owner role when there is one."""
+    conn = psycopg.connect(url, autocommit=True)
+    if role:
+        conn.execute(sql.SQL("set role {}").format(sql.Identifier(role)))
+    return conn
+
+
+def migrate(url: str, cfg: Config, contracts: Contracts, role: str = "") -> None:
+    with connect(url, role) as conn, conn.cursor() as cur:
         for stmt in ddl(cfg, contracts):
             cur.execute(stmt)
+
+
+def tokenizer(url: str, function: str, cache: int = 100_000) -> Callable[[str], str]:
+    """Tokens from the database's tokenize function (postgres-login's tokenize_function): its key never
+    leaves the database. Its own connection; recent values are remembered in memory."""
+    import functools
+    import threading
+
+    parts = function.split(".")
+    if len(parts) != 2 or not all(part.replace("_", "").isalnum() and part.islower() for part in parts):
+        raise ValueError(f"tokenize_function {function!r}: <schema>.<function>")
+    q = sql.SQL("select {}(%s)").format(sql.SQL(".").join(sql.Identifier(p) for p in parts))
+    conn, lock = psycopg.connect(url, autocommit=True), threading.Lock()
+
+    @functools.lru_cache(maxsize=cache)
+    def tokenize(value: str) -> str:
+        with lock:
+            row = conn.execute(q, [value]).fetchone()
+        if not row or row[0] is None:
+            raise ValueError("the database's tokenize function returned nothing")
+        return str(row[0])
+
+    return tokenize
 
 
 def _q(*parts: str | sql.Composable) -> sql.Composed:
@@ -115,9 +154,9 @@ def _q(*parts: str | sql.Composable) -> sql.Composed:
 
 
 class PgStore:
-    def __init__(self, url: str, cfg: Config) -> None:
+    def __init__(self, url: str, cfg: Config, role: str = "") -> None:
         self.url, self.cfg = url, cfg
-        self.conn = psycopg.connect(url, autocommit=True)
+        self.conn = connect(url, role)
 
     def _key(self, table: str) -> sql.Identifier:
         return sql.Identifier(self.cfg.tables[table].key)

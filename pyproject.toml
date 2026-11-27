@@ -15,6 +15,9 @@ dependencies = [
   "opentelemetry-exporter-otlp-proto-http>=1.45,<2",
   "opentelemetry-instrumentation-psycopg>=0.66b2",
   "sentry-sdk>=2.72,<3",
+  # Signing in as the workload identity, with a token (GCP: Cloud SQL IAM; Azure: Microsoft Entra).
+  "google-auth>=2.40,<3",
+  "azure-identity>=1.25,<2",
 ]
 
 [project.scripts]

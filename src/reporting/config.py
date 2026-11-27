@@ -82,6 +82,9 @@ class Config:
     topic_prefix: str
     tables: dict[str, Table]
     destinations: dict[str, Destination]
+    # A reference to the Expert Determination (45 CFR 164.514(b)(1)) that lets tokens go to
+    # de-identified destinations, recorded by a person. Empty: de-identified copies carry no tokens.
+    expert_determination: str = ""
 
     def topic(self, table: str, deidentified: bool = False) -> str:
         return f"{self.topic_prefix}.{table}.{'deid.' if deidentified else ''}v1"
@@ -100,6 +103,9 @@ def parse(raw: dict[str, Any], contracts: Contracts, data_class: str = "general"
         tables[tname] = _table(str(tname), t or {}, contracts, problems)
     if not tables:
         problems.append("tables: name at least one")
+    # A reference to the Expert Determination (45 CFR 164.514(b)(1)) that lets tokens leave as
+    # de-identified, recorded by a person. Empty: tokens of a person's value don't leave.
+    expert = str(raw.get("expert_determination") or "").strip()
     dests: dict[str, Destination] = {}
     for dname, d in (raw.get("destinations") or {}).items():
         d = d or {}
@@ -118,6 +124,14 @@ def parse(raw: dict[str, Any], contracts: Contracts, data_class: str = "general"
         if not dest.tables:
             problems.append(f"destination {dname}: list the tables it gets")
         problems += _personal(dest, tables, contracts, data_class)
+        if dest.deidentified and not expert:
+            for tn in dest.tables:
+                t = tables.get(tn)
+                if t and t.key in t.tokenize:
+                    problems.append(
+                        f"destination {dname}: {tn} is keyed by a token, and a de-identified copy carries no tokens"
+                        " without a recorded expert_determination (45 CFR 164.514(c)); key it by something else"
+                    )
     if not dests:
         problems.append("destinations: name at least one (a store, a lake or an export)")
     if data_class == "phi" and dests and not any(d.type in OWN_ACCOUNT for d in dests.values()):
@@ -127,7 +141,7 @@ def parse(raw: dict[str, Any], contracts: Contracts, data_class: str = "general"
         )
     if problems:
         raise ConfigError("reporting.yaml: " + "; ".join(problems))
-    return Config(name, prefix, tables, dests)
+    return Config(name, prefix, tables, dests, expert)
 
 
 def _table(name: str, t: dict[str, Any], contracts: Contracts, problems: list[str]) -> Table:
@@ -167,7 +181,8 @@ def _table(name: str, t: dict[str, Any], contracts: Contracts, problems: list[st
 
 def _personal(dest: Destination, tables: dict[str, Table], contracts: Contracts, data_class: str) -> list[str]:
     """What a destination may receive: an export of a PHI product is de-identified, and a de-identified
-    destination never gets a person's value, only its token or its generalization."""
+    destination never gets a person's value, only its generalization (or, with a recorded Expert
+    Determination, its token: rules.row)."""
     out = []
     if data_class == "phi" and dest.type in EXPORTS and not dest.deidentified:
         out.append(
@@ -187,6 +202,7 @@ def _personal(dest: Destination, tables: dict[str, Table], contracts: Contracts,
                 out.append(f"destination {dest.name}: {tn}.{f} is {cls}; tokenize or generalize it, or leave it out")
         if props.get(t.key, {}).get("x-classification") in PERSONAL:
             out.append(f"destination {dest.name}: {tn}'s key {t.key} is personal; key the table by a token")
+
     return out
 
 

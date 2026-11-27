@@ -28,7 +28,7 @@ from opentelemetry import propagate
 
 from .config import Config, Table
 from .contracts import ContractError, Contracts, count, summary_line
-from .rules import row
+from .rules import Tokenizer, row
 from .store import Store
 from .telemetry import tracer
 
@@ -67,7 +67,7 @@ class Runner(threading.Thread):
         *,
         kafka: dict[str, Any],
         generation: int,
-        token_key: bytes,
+        token_key: bytes | Tokenizer,
         primary: bool,
         consumer_factory: Factory,
         producer_factory: Factory,
@@ -180,7 +180,13 @@ class Runner(threading.Thread):
                 self._produce(self.cfg.topic(t.name, self.output.deidentified), key, None)
             return
         checked = self.contract.check(data)
-        r = row(t, checked, self.token_key, deidentified=self.output.deidentified)
+        r = row(
+            t,
+            checked,
+            self.token_key,
+            deidentified=self.output.deidentified,
+            tokens=bool(self.cfg.expert_determination),
+        )
         key = str(r[t.key])
         if self.output.kind == "store":
             self.store.upsert(t.name, key, r, msg.offset(), msg.partition())
@@ -207,6 +213,7 @@ def flow(cfg: Config) -> dict[str, Any]:
                 "dataset": t.dataset,
                 "fields": list(t.fields),
                 "tokenized": list(t.tokenize),
+                "tokens_leave_deidentified": bool(cfg.expert_determination),
                 "generalized": dict(t.generalize),
                 "tenant": t.tenant,
                 "retention_days": t.retention_days,
@@ -230,7 +237,7 @@ class Sink:
         store: Store,
         *,
         kafka: dict[str, Any],
-        token_key: bytes,
+        token_key: bytes | Tokenizer,
         consumer_factory: Factory | None = None,
         producer_factory: Factory | None = None,
     ) -> None:

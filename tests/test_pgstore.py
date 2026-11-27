@@ -131,3 +131,52 @@ def test_tenant_grants_through_the_admin_command(store: PgStore, monkeypatch: py
     actions = [e["data"]["action"] for e in sink.events]
     assert actions == ["reporting.tenant.granted", "reporting.tenant.revoked"]
     assert sink.events[0]["data"]["actor"]["id"] == "analyst-lead"
+
+
+def test_as_its_own_login_the_sink_makes_tables_as_the_stores_owner_role_and_tokenizes_in_the_database():
+    """As the platform sets it up (postgres-login access owner, grantRoles reporting_reader): the
+    component's login can't create roles; it SETs ROLE to <database>_owner, which owns what it makes."""
+    if not URL:
+        pytest.skip("set REPORTING_TEST_DATABASE_URL")
+    db = f"reporting_{uuid.uuid4().hex[:8]}"
+    login, owner, pw = f"{db}_sink", f"{db}_owner", "sink-pw-123"
+    with psycopg.connect(URL, autocommit=True) as c:
+        c.execute(f"create database {db}")
+        for role in (owner, "reporting_reader"):
+            c.execute(
+                psycopg.sql.SQL(
+                    "do $$ begin if not exists (select 1 from pg_roles where rolname = {}) then create role {} nologin;"
+                    " end if; end $$"
+                ).format(psycopg.sql.Literal(role), psycopg.sql.Identifier(role))
+            )
+        c.execute(f"create role {login} login password '{pw}'")
+        c.execute(f"grant {owner} to {login}")
+        c.execute(f"grant reporting_reader to {owner} with admin option")
+    admin = psycopg.conninfo.make_conninfo(URL, dbname=db)
+    with psycopg.connect(admin, autocommit=True) as c:
+        c.execute(f"grant usage, create on schema public to {owner}")
+        c.execute("create schema k")
+        c.execute(
+            "create function k.tokenize(t text) returns text language sql stable security definer"
+            " as $$ select 'v3:' || md5(t) $$"
+        )
+        c.execute(f"grant usage on schema k to {login}")
+        c.execute(f"grant execute on function k.tokenize(text) to {login}")
+    url = psycopg.conninfo.make_conninfo(URL, dbname=db, user=login, password=pw)
+    try:
+        migrate(url, config(), CONTRACTS, role=owner)
+        with psycopg.connect(admin) as c:
+            owners = {r[0] for r in c.execute("select tableowner from pg_tables where schemaname = 'public'")}
+        assert owners == {owner}
+        from reporting.pgstore import tokenizer
+
+        tok = tokenizer(url, "k.tokenize")
+        assert tok("p-77") == tok("p-77") and tok("p-77").startswith("v3:")
+        with pytest.raises(ValueError, match=r"<schema>\.<function>"):
+            tokenizer(url, "k.tokenize; drop table x")
+    finally:
+        with psycopg.connect(URL, autocommit=True) as c:
+            c.execute(f"drop database {db} with (force)")
+            c.execute(f"drop role {login}")
+            c.execute(f"drop owned by {owner}")
+            c.execute(f"drop role {owner}")

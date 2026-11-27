@@ -11,11 +11,26 @@ class Settings(BaseSettings):
     config_path: str = "reporting.yaml"
     contracts_dir: str = "contracts"  # written by the SDLC tool, shipped in the image
     data_class: str = "general"  # general | payments | phi: from the product (decides what may leave)
-    # The store's owner (migrations and writes). Reports connect as a member of reporting_reader.
+    # The store, as this component's own login (platform-resources postgres-login, access owner): it
+    # signs in as its workload identity with a short-lived token (pg_auth gcp-iam or azure-entra; no
+    # password anywhere, constitution VX-20), then SETs ROLE pg_role (<database>_owner), so the tables
+    # belong to the store's role. workload.yaml binds REPORTING_PG_HOST, _PORT, _DATABASE, _USER,
+    # _AUTH and _ROLE. Local runs: database_url (or pg_auth password with pg_password).
+    pg_host: str = ""
+    pg_port: int = 5432
+    pg_database: str = ""
+    pg_user: str = ""
+    pg_auth: str = "password"  # gcp-iam | azure-entra | password (local and tests only)
+    pg_password: str = ""
+    pg_sslmode: str = "require"
+    pg_role: str = ""
     database_url: str = ""
+    # The login's tokenize function (<login>_key.tokenize): tokens from the database's own versioned
+    # key, which never reaches this component. Without it (local runs), token_key.
+    tokenize_function: str = ""
     kafka_bootstrap: str = ""
     kafka_config: dict[str, str] = {}  # security.protocol, sasl.*: as the platform's kafka-user gives them
-    # The key for tokenized fields (a secret of this component; the same key gives the same tokens).
+    # Local runs and tests only: a key for tokenized fields when there's no tokenize_function.
     token_key: str = ""
     # Kafka Connect (reporting-admin connectors): where the connectors live, and the product's lake.
     connect_namespace: str = ""

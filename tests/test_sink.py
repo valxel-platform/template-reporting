@@ -88,8 +88,16 @@ def test_filtered_topics_carry_rows_and_de_identified_ones_generalize() -> None:
         "kind": "progress",
         "signed_at": 2026,
         "clinic_id": "north-clinic",
-        "patient_id": token(KEY, "p-77"),
-    }
+    }  # no token: it's derived from the patient's id, and no Expert Determination is recorded
+
+
+def test_a_de_identified_copy_carries_tokens_only_with_an_expert_determination() -> None:
+    import dataclasses
+
+    cfg, producer = dataclasses.replace(config(), expert_determination="ED-2027-01"), Producer()
+    r = runner(cfg, Output("deid", True), [Msg(note("n-1"), 1)], MemoryStore(), producer)
+    r.step()
+    assert json.loads(producer.sent[0][2] or b"{}")["patient_id"] == token(KEY, "p-77")
 
 
 def test_an_event_that_breaks_its_contract_is_parked_once_and_counted() -> None:

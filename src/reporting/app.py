@@ -14,8 +14,9 @@ from . import errors, logs, telemetry
 from .audit import Actor, Auditor, make_sink
 from .component import COMPONENT
 from .config import Config, load
+from .connect import database_url
 from .contracts import Contracts
-from .pgstore import PgStore, migrate
+from .pgstore import PgStore, migrate, tokenizer
 from .settings import Settings
 from .sink import Sink, flow
 
@@ -58,13 +59,15 @@ def main() -> None:  # pragma: no cover - wiring; the parts are tested
     contracts = Contracts.load(s.contracts_dir)
     cfg = load(s.config_path, contracts, s.data_class)  # an invalid reporting.yaml stops it here
     start_http_server(s.port)
-    if not s.database_url or not s.kafka_bootstrap:
-        logging.warning("REPORTING_DATABASE_URL and REPORTING_KAFKA_BOOTSTRAP aren't set: idle")
+    url = database_url(s)
+    if not url or not s.kafka_bootstrap:
+        logging.warning("REPORTING_PG_HOST (or REPORTING_DATABASE_URL) and REPORTING_KAFKA_BOOTSTRAP aren't set: idle")
         threading.Event().wait()
-    migrate(s.database_url, cfg, contracts)
+    migrate(url, cfg, contracts, s.pg_role)
     record_flow(auditor(s), cfg)  # for payments and PHI, a sink that can't record it doesn't start
     kafka = {"bootstrap.servers": s.kafka_bootstrap, **s.kafka_config}
-    sink = Sink(cfg, contracts, PgStore(s.database_url, cfg), kafka=kafka, token_key=s.token_key.encode())
+    key = tokenizer(url, s.tokenize_function) if s.tokenize_function else s.token_key.encode()
+    sink = Sink(cfg, contracts, PgStore(url, cfg, s.pg_role), kafka=kafka, token_key=key)
     sink.start()
     done = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: done.set())
