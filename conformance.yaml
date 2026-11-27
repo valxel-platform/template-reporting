@@ -3,7 +3,7 @@
 # its tables and audits what flows where.
 image: "ci"  # the tag CI builds
 command: "uv run reporting-sink"  # conformance.py local: the sink as a process
-port: 8080
+port: 8081  # the management port: /metrics and /healthz, nothing else
 ready: /healthz
 postgres: "postgres:17-alpine"
 kafka: "apache/kafka:4.1.0"

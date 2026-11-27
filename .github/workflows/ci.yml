@@ -97,9 +97,9 @@ jobs:
       - run: docker build --pull -t ci .
       - name: Start the image
         run: |
-          docker run -d --name smoke -p 8080:8080 ci
+          docker run -d --name smoke -p 8081:8081 ci
           for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8080/healthz; then exit 0; fi
+            if curl -fsS http://127.0.0.1:8081/healthz; then exit 0; fi
             sleep 1
           done
           docker logs smoke
